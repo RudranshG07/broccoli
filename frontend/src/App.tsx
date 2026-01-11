@@ -41,12 +41,15 @@ function App() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <h1 className="text-3xl font-bold text-green-400">BroccoByte</h1>
+              <div className="flex items-center space-x-3">
+                <img src="/logo.png" alt="BroccoByte Logo" className="h-12 w-12 object-contain mix-blend-lighten" style={{backgroundColor: 'transparent'}} />
+                <h1 className="text-3xl font-bold text-green-400">BroccoByte</h1>
+              </div>
               {address && (
                 <div className="flex space-x-2">
                   <button
                     onClick={() => setView("provider")}
-                    className={`px-4 py-2 rounded ${
+                    className={`px-4 py-2 rounded-none ${
                       view === "provider"
                         ? "bg-green-500 text-black font-semibold"
                         : "bg-gray-900 text-green-400 hover:bg-gray-800 border border-green-500"
@@ -56,7 +59,7 @@ function App() {
                   </button>
                   <button
                     onClick={() => setView("consumer")}
-                    className={`px-4 py-2 rounded ${
+                    className={`px-4 py-2 rounded-none ${
                       view === "consumer"
                         ? "bg-green-500 text-black font-semibold"
                         : "bg-gray-900 text-green-400 hover:bg-gray-800 border border-green-500"
@@ -72,7 +75,7 @@ function App() {
                 <button
                   onClick={connectWallet}
                   disabled={isConnecting}
-                  className="bg-green-500 hover:bg-green-600 text-black px-6 py-2 rounded font-bold disabled:opacity-50"
+                  className="bg-green-500 hover:bg-green-600 text-black px-6 py-2 rounded-none font-bold disabled:opacity-50"
                 >
                   {isConnecting ? "Connecting..." : "Connect MetaMask"}
                 </button>
@@ -95,7 +98,7 @@ function App() {
                   </div>
                   <button
                     onClick={disconnectWallet}
-                    className="bg-gray-900 hover:bg-gray-800 text-green-400 px-4 py-2 rounded text-sm border border-green-500"
+                    className="bg-gray-900 hover:bg-gray-800 text-green-400 px-4 py-2 rounded-none text-sm border border-green-500"
                   >
                     Disconnect
                   </button>
@@ -104,7 +107,7 @@ function App() {
             </div>
           </div>
           {error && (
-            <div className="mt-4 bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded">
+            <div className="mt-4 bg-green-900/50 border border-green-700 text-green-200 px-4 py-2 rounded-none">
               {error}
             </div>
           )}
@@ -115,6 +118,9 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 py-8">
         {!address ? (
           <div className="text-center py-20">
+            <div className="flex justify-center mb-8">
+              <img src="/logo.png" alt="BroccoByte Logo" className="h-32 w-32 object-contain mix-blend-lighten" style={{backgroundColor: 'transparent'}} />
+            </div>
             <h2 className="text-4xl font-bold mb-4 text-green-400">Welcome to BroccoByte</h2>
             <p className="text-gray-400 mb-8">
               Connect your MetaMask wallet to get started

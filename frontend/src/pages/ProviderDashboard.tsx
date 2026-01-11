@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { CONTRACTS, GPU_REGISTRY_ABI, JOB_MARKETPLACE_ABI } from "../config/contracts";
 import type { GPU, Job } from "../types";
 import { JobStatus, getJobStatusName } from "../types";
+import { uploadJobResult, getIPFSGatewayUrl } from "../utils/ipfs";
 
 interface Props {
   address: string;
@@ -20,6 +21,15 @@ export default function ProviderDashboard({ address }: Props) {
   const [gpuModel, setGpuModel] = useState("");
   const [vram, setVram] = useState("");
   const [price, setPrice] = useState("");
+
+  // GPU Worker state
+  const [processingJobId, setProcessingJobId] = useState<number | null>(null);
+  const [executionLogs, setExecutionLogs] = useState<{[key: number]: string}>({});
+  const [executionResults, setExecutionResults] = useState<{[key: number]: string}>({});
+
+  // IPFS upload state
+  const [uploadingToIPFS, setUploadingToIPFS] = useState<{[key: number]: boolean}>({});
+  const [ipfsHashes, setIpfsHashes] = useState<{[key: number]: string}>({});
 
   const addNotification = (message: string) => {
     setNotifications((prev) => [message, ...prev].slice(0, 5));
@@ -60,7 +70,9 @@ export default function ProviderDashboard({ address }: Props) {
           };
         })
       );
-      setGpus(gpuData);
+      // Filter out GPUs that have been removed (marked as unavailable)
+      const activeGpus = gpuData.filter(gpu => gpu.available);
+      setGpus(activeGpus);
 
       // Load provider's jobs
       const jobIds = await marketplaceContract.getProviderJobs(address);
@@ -244,16 +256,113 @@ export default function ProviderDashboard({ address }: Props) {
     }
   };
 
+  // Parse job data from description
+  const parseJobData = (description: string) => {
+    try {
+      return JSON.parse(description);
+    } catch {
+      return { type: "simple", description };
+    }
+  };
+
+  // Run job with GPU worker
+  const runJobWithGPU = async (job: Job) => {
+    const jobData = parseJobData(job.description);
+    setProcessingJobId(job.jobId);
+    setExecutionLogs(prev => ({...prev, [job.jobId]: "Starting GPU worker...\n"}));
+
+    try {
+      // Check if worker is running
+      const healthCheck = await fetch('http://localhost:3001/health').catch(() => null);
+      if (!healthCheck) {
+        throw new Error("GPU Worker not running. Start it with: cd provider-worker && npm start");
+      }
+
+      setExecutionLogs(prev => ({...prev, [job.jobId]: prev[job.jobId] + "Calling GPU worker...\n"}));
+
+      // Call GPU worker
+      const response = await fetch('http://localhost:3001/process-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: job.jobId,
+          jobType: jobData.type || 'simple',
+          jobData: jobData.type === 'python-script'
+            ? { code: jobData.code }
+            : jobData.type === 'docker-image'
+            ? { image: jobData.image }
+            : { description: jobData.description }
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setExecutionLogs(prev => ({
+          ...prev,
+          [job.jobId]: prev[job.jobId] + "\n=== EXECUTION LOGS ===\n" + result.logs + "\n=== COMPLETE ===\n"
+        }));
+        setExecutionResults(prev => ({...prev, [job.jobId]: result.resultHash || result.result}));
+        addNotification(`Job #${job.jobId} processed successfully! Result: ${result.result?.substring(0, 20)}...`);
+      } else {
+        throw new Error(result.error || "GPU processing failed");
+      }
+    } catch (error: any) {
+      console.error("GPU Worker error:", error);
+      setExecutionLogs(prev => ({
+        ...prev,
+        [job.jobId]: prev[job.jobId] + `\nERROR: ${error.message}\n`
+      }));
+      alert(`GPU Worker Error: ${error.message}`);
+    } finally {
+      setProcessingJobId(null);
+    }
+  };
+
+  const uploadResultToIPFS = async (jobId: number) => {
+    const logs = executionLogs[jobId] || "No execution logs";
+    const result = executionResults[jobId] || "No result data";
+
+    setUploadingToIPFS(prev => ({...prev, [jobId]: true}));
+
+    try {
+      const uploadResult = await uploadJobResult(jobId, logs, result);
+
+      if (uploadResult.success && uploadResult.ipfsUrl) {
+        setIpfsHashes(prev => ({...prev, [jobId]: uploadResult.ipfsUrl!}));
+        setExecutionResults(prev => ({...prev, [jobId]: uploadResult.ipfsUrl!}));
+        addNotification(`Job #${jobId} uploaded to IPFS: ${uploadResult.ipfsHash}`);
+
+        // Show gateway URL for viewing
+        const gatewayUrl = getIPFSGatewayUrl(uploadResult.ipfsHash!);
+        console.log(`View on IPFS: ${gatewayUrl}`);
+      } else {
+        throw new Error(uploadResult.error || "Upload failed");
+      }
+    } catch (error: any) {
+      console.error("IPFS upload error:", error);
+      alert(`Failed to upload to IPFS: ${error.message}`);
+    } finally {
+      setUploadingToIPFS(prev => ({...prev, [jobId]: false}));
+    }
+  };
+
   const completeJob = async (jobId: number) => {
-    const resultHash = prompt(
-      "Enter result hash (proof of completed work):\n\n" +
-      "Examples:\n" +
-      "• IPFS: ipfs://QmXxXxXxX...\n" +
-      "• URL: https://storage.com/results.zip\n" +
-      "• Hash: 0x1234abcd...\n" +
-      "• Demo: completed-job-" + jobId + "\n\n" +
-      "For testing, you can enter any text:"
-    );
+    // Use IPFS hash if available, then auto-generated result, otherwise ask
+    let resultHash: string | null = ipfsHashes[jobId] || executionResults[jobId];
+
+    if (!resultHash) {
+      resultHash = prompt(
+        "Enter result hash (proof of completed work):\n\n" +
+        "Examples:\n" +
+        "• IPFS: ipfs://QmXxXxXxX...\n" +
+        "• URL: https://storage.com/results.zip\n" +
+        "• Hash: 0x1234abcd...\n" +
+        "• Demo: completed-job-" + jobId + "\n\n" +
+        "For testing, you can enter any text:"
+      );
+    }
+
     if (!resultHash) return;
 
     setTxPending(true);
@@ -268,6 +377,24 @@ export default function ProviderDashboard({ address }: Props) {
 
       const tx = await contract.completeJob(jobId, resultHash);
       await tx.wait();
+
+      // Clear execution data
+      setExecutionLogs(prev => {
+        const newLogs = {...prev};
+        delete newLogs[jobId];
+        return newLogs;
+      });
+      setExecutionResults(prev => {
+        const newResults = {...prev};
+        delete newResults[jobId];
+        return newResults;
+      });
+      setIpfsHashes(prev => {
+        const newHashes = {...prev};
+        delete newHashes[jobId];
+        return newHashes;
+      });
+
       await loadData();
     } catch (error: any) {
       console.error("Failed to complete job:", error);
@@ -279,7 +406,7 @@ export default function ProviderDashboard({ address }: Props) {
 
   if (CONTRACTS.sepolia.gpuRegistry === "0x0000000000000000000000000000000000000000") {
     return (
-      <div className="bg-yellow-900/20 border border-yellow-700 text-yellow-200 p-4 rounded">
+      <div className="bg-yellow-900/20 border border-yellow-700 text-yellow-200 p-4 rounded-none">
         <strong>Contracts not deployed yet!</strong> Deploy the smart contracts to Sepolia and
         update the addresses in <code>frontend/src/config/contracts.ts</code>
       </div>
@@ -294,7 +421,7 @@ export default function ProviderDashboard({ address }: Props) {
           {notifications.map((notif, idx) => (
             <div
               key={idx}
-              className="bg-green-600 text-white px-6 py-3 rounded-lg shadow-lg border border-green-500 animate-pulse"
+              className="bg-green-600 text-white px-6 py-3 rounded-none shadow-lg border-2 border-[#00FF88] animate-pulse"
             >
               {notif}
             </div>
@@ -302,30 +429,33 @@ export default function ProviderDashboard({ address }: Props) {
         </div>
       )}
 
-      <h2 className="text-3xl font-bold text-green-400">Provider Dashboard</h2>
+      <div className="flex items-center space-x-4 mb-8">
+        <img src="/logo.png" alt="BroccoByte Logo" className="h-16 w-16 object-contain mix-blend-lighten" style={{backgroundColor: 'transparent'}} />
+        <h2 className="text-3xl font-bold text-[#00FF88]">Provider Dashboard</h2>
+      </div>
 
       {/* Statistics Overview */}
       {!loading && gpus.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="bg-gray-900 p-4 rounded-lg border border-green-500">
+          <div className="bg-gray-900 p-4 rounded-none border-2 border-[#00FF88]">
             <div className="text-xs text-gray-500 mb-1">Total GPUs</div>
-            <div className="text-2xl font-bold text-green-400">{gpus.length}</div>
+            <div className="text-2xl font-bold text-[#00FF88]">{gpus.length}</div>
             <div className="text-xs text-gray-400 mt-1">
               {gpus.filter(g => g.available).length} available
             </div>
           </div>
-          <div className="bg-gray-900 p-4 rounded-lg border border-green-500">
+          <div className="bg-gray-900 p-4 rounded-none border-2 border-[#00FF88]">
             <div className="text-xs text-gray-500 mb-1">Total Jobs</div>
-            <div className="text-2xl font-bold text-green-400">
+            <div className="text-2xl font-bold text-[#00FF88]">
               {gpus.reduce((sum, gpu) => sum + gpu.totalJobs, 0)}
             </div>
             <div className="text-xs text-gray-400 mt-1">
               {jobs.filter(j => j.status === JobStatus.Completed).length} completed
             </div>
           </div>
-          <div className="bg-gray-900 p-4 rounded-lg border border-green-500">
+          <div className="bg-gray-900 p-4 rounded-none border-2 border-[#00FF88]">
             <div className="text-xs text-gray-500 mb-1">Total Earned</div>
-            <div className="text-2xl font-bold text-green-400">
+            <div className="text-2xl font-bold text-[#00FF88]">
               {jobs
                 .filter(j => j.status === JobStatus.Completed)
                 .reduce((sum, job) => sum + parseFloat(job.paymentAmount) * 0.95, 0)
@@ -333,9 +463,9 @@ export default function ProviderDashboard({ address }: Props) {
             </div>
             <div className="text-xs text-gray-400 mt-1">95% of payments</div>
           </div>
-          <div className="bg-gray-900 p-4 rounded-lg border border-green-500">
+          <div className="bg-gray-900 p-4 rounded-none border-2 border-[#00FF88]">
             <div className="text-xs text-gray-500 mb-1">Active Jobs</div>
-            <div className="text-2xl font-bold text-green-400">
+            <div className="text-2xl font-bold text-[#00FF88]">
               {jobs.filter(j => j.status === JobStatus.Claimed).length}
             </div>
             <div className="text-xs text-gray-400 mt-1">
@@ -346,34 +476,34 @@ export default function ProviderDashboard({ address }: Props) {
       )}
 
       {/* Register GPU Form */}
-      <div className="bg-gray-900 p-6 rounded-lg">
-        <h3 className="text-xl font-semibold mb-4 text-green-400">Register New GPU</h3>
+      <div className="bg-gray-900 p-6 rounded-none">
+        <h3 className="text-xl font-semibold mb-4 text-[#00FF88]">Register New GPU</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <input
             type="text"
             placeholder="GPU Model (e.g., RTX 4090)"
             value={gpuModel}
             onChange={(e) => setGpuModel(e.target.value)}
-            className="bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white"
+            className="bg-gray-800 border-2 border-gray-600 rounded-none px-4 py-2 text-white focus:border-[#00FF88] focus:outline-none"
           />
           <input
             type="number"
             placeholder="VRAM (GB)"
             value={vram}
             onChange={(e) => setVram(e.target.value)}
-            className="bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white"
+            className="bg-gray-800 border-2 border-gray-600 rounded-none px-4 py-2 text-white focus:border-[#00FF88] focus:outline-none"
           />
           <input
             type="text"
             placeholder="Price per Hour (ETH)"
             value={price}
             onChange={(e) => setPrice(e.target.value)}
-            className="bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white"
+            className="bg-gray-800 border-2 border-gray-600 rounded-none px-4 py-2 text-white focus:border-[#00FF88] focus:outline-none"
           />
           <button
             onClick={registerGPU}
             disabled={txPending || !gpuModel || !vram || !price}
-            className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50"
+            className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-6 py-2 rounded-none font-medium disabled:opacity-50 border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50"
           >
             {txPending ? "Processing..." : "Register GPU"}
           </button>
@@ -382,7 +512,7 @@ export default function ProviderDashboard({ address }: Props) {
 
       {/* My GPUs */}
       <div>
-        <h3 className="text-2xl font-semibold mb-4 text-green-400">My GPUs</h3>
+        <h3 className="text-2xl font-semibold mb-4 text-[#00FF88]">My GPUs</h3>
         {loading ? (
           <div className="text-gray-400">Loading...</div>
         ) : gpus.length === 0 ? (
@@ -391,19 +521,19 @@ export default function ProviderDashboard({ address }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {gpus.map((gpu) => {
               const activeJob = jobs.find(j => j.gpuId === gpu.id && j.status === JobStatus.Claimed);
-              return (<div key={gpu.id} className="bg-gray-900 p-4 rounded-lg border-2 border-transparent hover:border-green-500">
+              return (<div key={gpu.id} className="bg-gray-900 p-4 rounded-none border-2 border-transparent hover:border-[#00FF88] transition-all hover:shadow-lg hover:shadow-[#00FF88]/20">
                 <div className="flex justify-between items-start mb-2">
-                  <h4 className="text-lg font-semibold text-green-400">{gpu.model}</h4>
+                  <h4 className="text-lg font-semibold text-[#00FF88]">{gpu.model}</h4>
                   <div className="flex flex-col gap-1 items-end">
                     <span
-                      className={`px-2 py-1 rounded text-xs ${
-                        gpu.available ? "bg-green-600" : "bg-gray-600"
+                      className={`px-2 py-1 rounded-none text-xs border ${
+                        gpu.available ? "bg-green-600 border-[#00FF88]" : "bg-gray-600 border-gray-500"
                       }`}
                     >
                       {gpu.available ? "Available" : "Unavailable"}
                     </span>
                     {activeJob && (
-                      <span className="px-2 py-1 rounded text-xs bg-green-600 animate-pulse">
+                      <span className="px-2 py-1 rounded-none text-xs bg-green-600 border border-[#00FF88] animate-pulse">
                         Working
                       </span>
                     )}
@@ -417,7 +547,7 @@ export default function ProviderDashboard({ address }: Props) {
                     Registered: {new Date(gpu.registeredAt * 1000).toLocaleDateString()}
                   </div>
                   {activeJob && (
-                    <div className="mt-2 p-2 bg-green-900/30 rounded text-xs border border-green-700">
+                    <div className="mt-2 p-2 bg-green-900/30 rounded-none text-xs border-2 border-green-700">
                       Currently working on Job #{activeJob.jobId}
                     </div>
                   )}
@@ -426,7 +556,7 @@ export default function ProviderDashboard({ address }: Props) {
                   <button
                     onClick={() => toggleAvailability(gpu.id, gpu.available)}
                     disabled={txPending || activeJob !== undefined}
-                    className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
+                    className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-none text-sm disabled:opacity-50 border border-gray-600 transition-all hover:border-[#00FF88]"
                     title={activeJob ? "Cannot change while job is active" : ""}
                   >
                     {gpu.available ? "Set Unavailable" : "Set Available"}
@@ -442,7 +572,7 @@ export default function ProviderDashboard({ address }: Props) {
                       }
                     }}
                     disabled={txPending || activeJob !== undefined}
-                    className="bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
+                    className="bg-gradient-to-r from-green-700 to-green-600 hover:from-green-600 hover:to-green-700 text-white px-4 py-2 rounded-none text-sm disabled:opacity-50 border border-[#00FF88] transition-all hover:shadow-lg hover:shadow-[#00FF88]/50"
                   >
                     Remove
                   </button>
@@ -456,7 +586,7 @@ export default function ProviderDashboard({ address }: Props) {
 
       {/* Available Jobs to Claim */}
       <div>
-        <h3 className="text-2xl font-semibold mb-4 text-green-400">Available Jobs to Claim</h3>
+        <h3 className="text-2xl font-semibold mb-4 text-[#00FF88]">Available Jobs to Claim</h3>
         {loading ? (
           <div className="text-gray-400">Loading...</div>
         ) : availableJobs.length === 0 ? (
@@ -469,30 +599,30 @@ export default function ProviderDashboard({ address }: Props) {
               const platformFee = (parseFloat(job.paymentAmount) * 0.05).toFixed(4);
 
               return (
-              <div key={job.jobId} className="bg-gradient-to-r from-green-900/20 to-gray-900 p-6 rounded-lg border-2 border-green-600">
+              <div key={job.jobId} className="bg-gradient-to-r from-green-900/20 to-gray-900 p-6 rounded-none border-2 border-green-600">
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h4 className="text-xl font-semibold text-green-400">Job #{job.jobId}</h4>
-                      <span className="px-3 py-1 rounded text-sm font-medium bg-green-600 animate-pulse">
+                      <h4 className="text-xl font-semibold text-[#00FF88]">Job #{job.jobId}</h4>
+                      <span className="px-3 py-1 rounded-none text-sm font-medium bg-green-600 border border-[#00FF88] animate-pulse">
                         OPEN - Ready to Claim!
                       </span>
                     </div>
                     <p className="text-gray-300 text-lg mb-3">{job.description}</p>
 
                     {/* Payment Breakdown */}
-                    <div className="grid grid-cols-3 gap-4 mt-3 p-3 bg-black rounded">
+                    <div className="grid grid-cols-3 gap-4 mt-3 p-3 bg-black rounded-none border border-[#00FF88]/30">
                       <div>
                         <div className="text-xs text-gray-500">Total Payment</div>
                         <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">You'll Earn (95%)</div>
-                        <div className="text-lg font-semibold text-green-400">{yourEarnings} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU</div>
-                        <div className="text-sm text-green-400">{gpu?.model || `GPU #${job.gpuId}`}</div>
+                        <div className="text-sm text-[#00FF88]">{gpu?.model || `GPU #${job.gpuId}`}</div>
                       </div>
                     </div>
 
@@ -500,7 +630,7 @@ export default function ProviderDashboard({ address }: Props) {
                       <div>Compute Hours: {job.computeHours}h</div>
                       <div>Consumer: {job.consumer.slice(0, 10)}...{job.consumer.slice(-8)}</div>
                       <div>Posted: {new Date(job.createdAt * 1000).toLocaleString()}</div>
-                      <div className="text-xs text-green-400 mt-2">Platform fee: {platformFee} ETH (5%)</div>
+                      <div className="text-xs text-[#00FF88] mt-2">Platform fee: {platformFee} ETH (5%)</div>
                     </div>
                   </div>
 
@@ -509,7 +639,7 @@ export default function ProviderDashboard({ address }: Props) {
                     <button
                       onClick={() => claimJob(job.jobId)}
                       disabled={txPending}
-                      className="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-lg font-bold text-lg disabled:opacity-50 shadow-lg animate-pulse"
+                      className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-8 py-4 rounded-none font-bold text-lg disabled:opacity-50 border-2 border-[#00FF88] shadow-xl shadow-[#00FF88]/50 animate-pulse transition-all hover:shadow-2xl hover:shadow-[#00FF88]/70"
                     >
                       Claim Job<br/>
                       <span className="text-sm font-normal">Earn {yourEarnings} ETH</span>
@@ -523,16 +653,16 @@ export default function ProviderDashboard({ address }: Props) {
         )}
       </div>
 
-      {/* My Jobs */}
+      {/* Current Jobs */}
       <div>
-        <h3 className="text-2xl font-semibold mb-4 text-green-500">My Active Jobs</h3>
+        <h3 className="text-2xl font-semibold mb-4 text-[#00FF88]">Current Jobs</h3>
         {loading ? (
           <div className="text-gray-400">Loading...</div>
-        ) : jobs.length === 0 ? (
-          <div className="text-gray-400">No jobs claimed yet</div>
+        ) : jobs.filter(j => j.status !== JobStatus.Completed && j.status !== JobStatus.Cancelled).length === 0 ? (
+          <div className="text-gray-400">No active jobs</div>
         ) : (
           <div className="space-y-4">
-            {jobs.map((job) => {
+            {jobs.filter(j => j.status !== JobStatus.Completed && j.status !== JobStatus.Cancelled).map((job) => {
               const now = Math.floor(Date.now() / 1000);
               const timeElapsed = job.claimedAt > 0 ? now - job.claimedAt : 0;
               const totalSeconds = job.computeHours * 3600;
@@ -542,42 +672,64 @@ export default function ProviderDashboard({ address }: Props) {
               const progress = job.claimedAt > 0 ? Math.min(100, (timeElapsed / totalSeconds) * 100) : 0;
               const yourEarnings = (parseFloat(job.paymentAmount) * 0.95).toFixed(4);
               const platformFee = (parseFloat(job.paymentAmount) * 0.05).toFixed(4);
+              const jobData = parseJobData(job.description);
 
               return (
-              <div key={job.jobId} className="bg-gray-900 p-6 rounded-lg border-2 border-gray-800">
+              <div key={job.jobId} className="bg-gray-900 p-6 rounded-none border-2 border-gray-800">
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h4 className="text-xl font-semibold text-green-400">Job #{job.jobId}</h4>
+                      <h4 className="text-xl font-semibold text-[#00FF88]">Job #{job.jobId}</h4>
+                      <span className="px-3 py-1 rounded-none text-xs bg-gray-700 text-gray-300 border border-gray-600">
+                        {jobData.type || "simple"}
+                      </span>
                       <span
-                        className={`px-3 py-1 rounded text-sm font-medium ${
+                        className={`px-3 py-1 rounded-none text-sm font-medium border ${
                           job.status === JobStatus.Claimed
-                            ? "bg-green-600 animate-pulse"
+                            ? "bg-green-600 border-[#00FF88] animate-pulse"
                             : job.status === JobStatus.Completed
-                            ? "bg-green-600"
-                            : "bg-gray-600"
+                            ? "bg-green-600 border-[#00FF88]"
+                            : "bg-gray-600 border-gray-500"
                         }`}
                       >
                         {getJobStatusName(job.status)}
                       </span>
                     </div>
-                    <p className="text-gray-300 text-lg mb-3">{job.description}</p>
+                    <p className="text-gray-300 text-lg mb-3">{jobData.description || job.description}</p>
+
+                    {/* Show code/image preview */}
+                    {jobData.type === "python-script" && jobData.code && (
+                      <div className="mb-3 p-3 bg-black rounded-none border-2 border-gray-700">
+                        <div className="text-xs text-gray-500 mb-1">Python Code:</div>
+                        <pre className="text-xs text-[#00FF88] font-mono overflow-x-auto max-h-32">
+                          {jobData.code.substring(0, 200)}
+                          {jobData.code.length > 200 && "..."}
+                        </pre>
+                      </div>
+                    )}
+
+                    {jobData.type === "docker-image" && jobData.image && (
+                      <div className="mb-3 p-3 bg-black rounded-none border-2 border-gray-700">
+                        <div className="text-xs text-gray-500 mb-1">Docker Image:</div>
+                        <div className="text-sm text-[#00FF88] font-mono">{jobData.image}</div>
+                      </div>
+                    )}
 
                     {/* Time Progress Bar - Only for Claimed jobs */}
                     {job.status === JobStatus.Claimed && (
                       <div className="mb-4">
                         <div className="flex justify-between text-sm mb-1">
                           <span className="text-gray-400">Work Progress</span>
-                          <span className="text-green-400 font-semibold">
+                          <span className="text-[#00FF88] font-semibold">
                             {remainingSeconds > 0
                               ? `${hoursLeft}h ${minutesLeft}m remaining`
                               : "Time exceeded - Complete job now!"}
                           </span>
                         </div>
-                        <div className="w-full bg-gray-800 rounded-full h-3">
+                        <div className="w-full bg-gray-800 rounded-none h-3 border border-gray-700">
                           <div
-                            className={`h-3 rounded-full transition-all ${
-                              remainingSeconds > 0 ? "bg-green-500" : "bg-red-500 animate-pulse"
+                            className={`h-3 rounded-none transition-all ${
+                              remainingSeconds > 0 ? "bg-gradient-to-r from-green-500 to-[#00FF88] shadow-lg shadow-[#00FF88]/50" : "bg-green-700 animate-pulse"
                             }`}
                             style={{ width: `${progress}%` }}
                           ></div>
@@ -586,14 +738,14 @@ export default function ProviderDashboard({ address }: Props) {
                     )}
 
                     {/* Payment Breakdown */}
-                    <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded">
+                    <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-[#00FF88]/30">
                       <div>
                         <div className="text-xs text-gray-500">Total Payment</div>
                         <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Your Earnings (95%)</div>
-                        <div className="text-lg font-semibold text-green-400">{yourEarnings} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Platform Fee (5%)</div>
@@ -601,7 +753,7 @@ export default function ProviderDashboard({ address }: Props) {
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU Used</div>
-                        <div className="text-sm text-green-400">GPU #{job.gpuId}</div>
+                        <div className="text-sm text-[#00FF88]">GPU #{job.gpuId}</div>
                       </div>
                     </div>
 
@@ -616,26 +768,97 @@ export default function ProviderDashboard({ address }: Props) {
                         <div>Completed: {new Date(job.completedAt * 1000).toLocaleString()}</div>
                       )}
                       {job.resultHash && (
-                        <div className="text-green-400">Result: {job.resultHash}</div>
+                        <div className="text-[#00FF88]">Result: {job.resultHash}</div>
                       )}
                     </div>
+
+                    {/* Execution Logs */}
+                    {executionLogs[job.jobId] && (
+                      <div className="mt-4 p-4 bg-black rounded-none border-2 border-[#00FF88]">
+                        <div className="text-sm text-gray-400 mb-2">GPU Worker Execution Logs:</div>
+                        <pre className="text-xs text-[#00FF88] font-mono overflow-x-auto max-h-64 whitespace-pre-wrap">
+                          {executionLogs[job.jobId]}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Auto-generated Result */}
+                    {executionResults[job.jobId] && !ipfsHashes[job.jobId] && (
+                      <div className="mt-3 p-3 bg-green-900/20 rounded-none border-2 border-[#00FF88]">
+                        <div className="text-xs text-gray-500 mb-1">Auto-Generated Result Hash:</div>
+                        <div className="text-sm text-[#00FF88] font-mono break-all">
+                          {executionResults[job.jobId]}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Upload to IPFS for permanent storage or submit directly
+                        </div>
+                      </div>
+                    )}
+
+                    {/* IPFS Upload Result */}
+                    {ipfsHashes[job.jobId] && (
+                      <div className="mt-3 p-3 bg-green-900/30 rounded-none border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/20">
+                        <div className="text-xs text-gray-500 mb-1">IPFS Result Hash (Permanent Storage):</div>
+                        <div className="text-sm text-[#00FF88] font-mono break-all">
+                          {ipfsHashes[job.jobId]}
+                        </div>
+                        <a
+                          href={getIPFSGatewayUrl(ipfsHashes[job.jobId].replace('ipfs://', ''))}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-400 hover:text-blue-300 underline mt-2 inline-block"
+                        >
+                          View on IPFS Gateway
+                        </a>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Ready to submit to blockchain
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Action Button */}
-                  <div className="ml-4">
+                  {/* Action Buttons */}
+                  <div className="ml-4 flex flex-col gap-2">
                     {job.status === JobStatus.Claimed && (
-                      <button
-                        onClick={() => completeJob(job.jobId)}
-                        disabled={txPending}
-                        className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium disabled:opacity-50 shadow-lg"
-                      >
-                        Complete Job<br/>
-                        <span className="text-xs">Submit result & earn {yourEarnings} ETH</span>
-                      </button>
+                      <>
+                        {/* Run with GPU button */}
+                        {(jobData.type === "python-script" || jobData.type === "docker-image") && (
+                          <button
+                            onClick={() => runJobWithGPU(job)}
+                            disabled={processingJobId === job.jobId || txPending}
+                            className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-6 py-3 rounded-none font-medium disabled:opacity-50 border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50 whitespace-nowrap"
+                          >
+                            {processingJobId === job.jobId ? "Processing..." : "Run with GPU"}<br/>
+                            <span className="text-xs">Automatic execution</span>
+                          </button>
+                        )}
+
+                        {/* Upload to IPFS button */}
+                        {executionResults[job.jobId] && !ipfsHashes[job.jobId] && (
+                          <button
+                            onClick={() => uploadResultToIPFS(job.jobId)}
+                            disabled={uploadingToIPFS[job.jobId] || txPending}
+                            className="bg-gradient-to-r from-green-700 to-green-600 hover:from-green-600 hover:to-green-700 text-white px-6 py-3 rounded-none font-medium disabled:opacity-50 border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50 whitespace-nowrap"
+                          >
+                            {uploadingToIPFS[job.jobId] ? "Uploading..." : "Upload to IPFS"}<br/>
+                            <span className="text-xs">Permanent storage</span>
+                          </button>
+                        )}
+
+                        {/* Complete Job button */}
+                        <button
+                          onClick={() => completeJob(job.jobId)}
+                          disabled={txPending}
+                          className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-6 py-3 rounded-none font-medium disabled:opacity-50 border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50 whitespace-nowrap"
+                        >
+                          {ipfsHashes[job.jobId] ? "Submit to Blockchain" : executionResults[job.jobId] ? "Submit Result" : "Complete Job"}<br/>
+                          <span className="text-xs">Earn {yourEarnings} ETH</span>
+                        </button>
+                      </>
                     )}
                     {job.status === JobStatus.Completed && (
-                      <div className="text-center p-3 bg-green-900/30 rounded-lg border border-green-600">
-                        <div className="text-green-400 font-semibold">Paid!</div>
+                      <div className="text-center p-3 bg-green-900/30 rounded-none border-2 border-[#00FF88]">
+                        <div className="text-[#00FF88] font-semibold">Paid!</div>
                         <div className="text-sm text-gray-400">{yourEarnings} ETH</div>
                       </div>
                     )}
@@ -646,6 +869,112 @@ export default function ProviderDashboard({ address }: Props) {
             })}
           </div>
         )}
+      </div>
+
+      {/* Job History */}
+      <div>
+        <h3 className="text-2xl font-semibold mb-4 text-[#00FF88]">Job History</h3>
+        {loading ? (
+          <div className="text-gray-400">Loading...</div>
+        ) : jobs.filter(j => j.status === JobStatus.Completed).length === 0 ? (
+          <div className="text-gray-400">No completed jobs yet</div>
+        ) : (
+          <div className="space-y-4">
+            {jobs.filter(j => j.status === JobStatus.Completed).map((job) => {
+              const yourEarnings = (parseFloat(job.paymentAmount) * 0.95).toFixed(4);
+              const platformFee = (parseFloat(job.paymentAmount) * 0.05).toFixed(4);
+              const jobData = parseJobData(job.description);
+
+              return (
+              <div key={job.jobId} className="bg-gray-900 p-6 rounded-none border-2 border-gray-700 opacity-90">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h4 className="text-xl font-semibold text-gray-400">Job #{job.jobId}</h4>
+                      <span className="px-3 py-1 rounded-none text-xs bg-gray-700 text-gray-300 border border-gray-600">
+                        {jobData.type || "simple"}
+                      </span>
+                      <span className="px-3 py-1 rounded-none text-sm font-medium border bg-green-600 border-[#00FF88]">
+                        {getJobStatusName(job.status)}
+                      </span>
+                    </div>
+                    <p className="text-gray-400 text-lg mb-3">{jobData.description || job.description}</p>
+
+                    {/* Show code/image preview */}
+                    {jobData.type === "python-script" && jobData.code && (
+                      <div className="mb-3 p-3 bg-black rounded-none border-2 border-gray-700">
+                        <div className="text-xs text-gray-500 mb-1">Python Code:</div>
+                        <pre className="text-xs text-gray-400 font-mono overflow-x-auto max-h-32">
+                          {jobData.code.substring(0, 200)}
+                          {jobData.code.length > 200 && "..."}
+                        </pre>
+                      </div>
+                    )}
+
+                    {jobData.type === "docker-image" && jobData.image && (
+                      <div className="mb-3 p-3 bg-black rounded-none border-2 border-gray-700">
+                        <div className="text-xs text-gray-500 mb-1">Docker Image:</div>
+                        <div className="text-sm text-gray-400 font-mono">{jobData.image}</div>
+                      </div>
+                    )}
+
+                    {/* Payment Breakdown */}
+                    <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-gray-700">
+                      <div>
+                        <div className="text-xs text-gray-500">Total Payment</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">You Earned (95%)</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">Platform Fee (5%)</div>
+                        <div className="text-sm text-gray-500">{platformFee} ETH</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">GPU Used</div>
+                        <div className="text-sm text-gray-400">GPU #{job.gpuId}</div>
+                      </div>
+                    </div>
+
+                    {/* Additional Details */}
+                    <div className="mt-3 text-sm space-y-1 text-gray-500">
+                      <div>Consumer: {job.consumer.slice(0, 10)}...{job.consumer.slice(-8)}</div>
+                      <div>Compute Hours: {job.computeHours}h</div>
+                      {job.claimedAt > 0 && (
+                        <div>Claimed: {new Date(job.claimedAt * 1000).toLocaleString()}</div>
+                      )}
+                      {job.completedAt > 0 && (
+                        <div>Completed: {new Date(job.completedAt * 1000).toLocaleString()}</div>
+                      )}
+                      {job.resultHash && (
+                        <div className="text-[#00FF88] mt-2 p-2 bg-green-900/20 rounded-none border border-[#00FF88]">
+                          Result: <span className="font-mono text-xs">{job.resultHash}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Status Badge */}
+                  <div className="ml-4">
+                    <div className="text-center p-3 bg-green-900/30 rounded-none border-2 border-[#00FF88]">
+                      <div className="text-[#00FF88] font-semibold">Paid!</div>
+                      <div className="text-sm text-gray-400">{yourEarnings} ETH</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="mt-16 pt-8 border-t border-gray-800 flex items-center justify-center space-x-3 opacity-50">
+        <img src="/logo.png" alt="BroccoByte" className="h-8 w-8 object-contain mix-blend-lighten" style={{backgroundColor: 'transparent'}} />
+        <span className="text-sm text-gray-500">Powered by BroccoByte</span>
       </div>
     </div>
   );

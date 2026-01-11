@@ -5,3 +5,15 @@
 body {
   @apply min-h-screen bg-black text-gray-100;
 }
+
+/* Logo transparency and effects */
+img[alt*="BroccoByte"] {
+  background: transparent !important;
+  filter: drop-shadow(0 0 8px rgba(0, 255, 136, 0.3));
+  transition: all 0.3s ease;
+}
+
+img[alt*="BroccoByte"]:hover {
+  filter: drop-shadow(0 0 12px rgba(0, 255, 136, 0.5));
+  transform: scale(1.05);
+}
