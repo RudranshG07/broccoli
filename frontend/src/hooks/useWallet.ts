@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { ethers } from "ethers";
-import { SEPOLIA_CHAIN_ID } from "../config/contracts";
 
 export const useWallet = () => {
   const [address, setAddress] = useState<string | null>(null);
