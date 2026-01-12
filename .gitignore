@@ -25,7 +25,16 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+/tmp/
+
+# Provider worker outputs
+provider-worker/results/
 
 # Foundry
 cache/
 out/
+**/broadcast/
+contracts/broadcast/
+
+# Backup files
+*.bak
