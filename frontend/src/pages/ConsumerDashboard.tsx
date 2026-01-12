@@ -1,20 +1,28 @@
 import { useState, useEffect } from "react";
 import { ethers } from "ethers";
-import { CONTRACTS, GPU_REGISTRY_ABI, JOB_MARKETPLACE_ABI } from "../config/contracts";
+import { GPU_REGISTRY_ABI, JOB_MARKETPLACE_ABI, getContracts } from "../config/contracts";
 import type { GPU, Job } from "../types";
 import { JobStatus, getJobStatusName } from "../types";
 import { getIPFSGatewayUrl } from "../utils/ipfs";
 
 interface Props {
   address: string;
+  currentChainId: number;
 }
 
-export default function ConsumerDashboard({ address }: Props) {
+export default function ConsumerDashboard({ address, currentChainId }: Props) {
   const [availableGPUs, setAvailableGPUs] = useState<(GPU & { id: number })[]>([]);
   const [myJobs, setMyJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
   const [txPending, setTxPending] = useState(false);
   const [notifications, setNotifications] = useState<string[]>([]);
+
+  const chainId = currentChainId;
+
+  // Get currency symbol based on network
+  const getCurrencySymbol = () => {
+    return chainId === 8119 ? 'SHM' : 'ETH';
+  };
 
   // Selected GPU for job posting
   const [selectedGpuId, setSelectedGpuId] = useState<number | null>(null);
@@ -65,12 +73,12 @@ export default function ConsumerDashboard({ address }: Props) {
     try {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const registryContract = new ethers.Contract(
-        CONTRACTS.sepolia.gpuRegistry,
+        getContracts(chainId).gpuRegistry,
         GPU_REGISTRY_ABI,
         provider
       );
       const marketplaceContract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         provider
       );
@@ -124,13 +132,14 @@ export default function ConsumerDashboard({ address }: Props) {
   };
 
   useEffect(() => {
-    if (CONTRACTS.sepolia.gpuRegistry !== "0x0000000000000000000000000000000000000000") {
+    if (chainId === 0) return; // Wait for chainId to be set
+    if (getContracts(chainId).gpuRegistry !== "0x0000000000000000000000000000000000000000") {
       loadData();
 
       // Setup event listeners for real-time updates
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const marketplaceContract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         provider
       );
@@ -139,7 +148,7 @@ export default function ConsumerDashboard({ address }: Props) {
       const jobPostedFilter = marketplaceContract.filters.JobPosted(null, address);
       marketplaceContract.on(jobPostedFilter, async (jobId, _consumer, _gpuId, paymentAmount) => {
         const ethAmount = ethers.utils.formatEther(paymentAmount);
-        addNotification(`Job #${jobId.toNumber()} posted successfully! Payment ${ethAmount} ETH locked in escrow.`);
+        addNotification(`Job #${jobId.toNumber()} posted successfully! Payment ${ethAmount} ${getCurrencySymbol()} locked in escrow.`);
         await loadData();
       });
 
@@ -169,7 +178,7 @@ export default function ConsumerDashboard({ address }: Props) {
         marketplaceContract.removeAllListeners();
       };
     }
-  }, [address]);
+  }, [address, chainId]);
 
   const postJob = async () => {
     if (selectedGpuId === null || !computeHours || calculatedPayment === "0") return;
@@ -214,7 +223,7 @@ export default function ConsumerDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         signer
       );
@@ -238,7 +247,28 @@ export default function ConsumerDashboard({ address }: Props) {
       await loadData();
     } catch (error: any) {
       console.error("Failed to post job:", error);
-      alert(`Failed to post job: ${error.message}`);
+
+      // Better error messages
+      let errorMsg = "Failed to post job";
+      if (error.message?.includes("insufficient") || error.data?.message?.includes("insufficient")) {
+        const currency = getCurrencySymbol();
+        errorMsg = `Insufficient ${currency} balance!\n\n`;
+        if (chainId === 8119) {
+          errorMsg += `You need SHM tokens on Shardeum.\n`;
+          errorMsg += `Get free SHM from faucet:\n`;
+          errorMsg += `https://faucet-sphinx.shardeum.org/`;
+        } else {
+          errorMsg += `You need ETH on Sepolia testnet.\n`;
+          errorMsg += `Get free ETH from faucet:\n`;
+          errorMsg += `https://sepoliafaucet.com/`;
+        }
+      } else if (error.code === 4001) {
+        errorMsg = "Transaction rejected by user";
+      } else {
+        errorMsg = `Failed to post job: ${error.message}`;
+      }
+
+      alert(errorMsg);
     } finally {
       setTxPending(false);
     }
@@ -252,7 +282,7 @@ export default function ConsumerDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         signer
       );
@@ -277,7 +307,7 @@ export default function ConsumerDashboard({ address }: Props) {
     }
   };
 
-  if (CONTRACTS.sepolia.gpuRegistry === "0x0000000000000000000000000000000000000000") {
+  if (getContracts(chainId).gpuRegistry === "0x0000000000000000000000000000000000000000") {
     return (
       <div className="bg-green-900/20 border border-green-700 text-green-200 p-4 rounded-none">
         <strong>Contracts not deployed yet!</strong> Deploy the smart contracts to Sepolia and
@@ -395,7 +425,7 @@ export default function ConsumerDashboard({ address }: Props) {
                 </div>
                 <div className="text-sm space-y-1 text-gray-300">
                   <div>VRAM: {gpu.vramGB} GB</div>
-                  <div>Price: {gpu.pricePerHour} ETH/hour</div>
+                  <div>Price: {gpu.pricePerHour} ${getCurrencySymbol()}/hour</div>
                   <div>Total Jobs Completed: {gpu.totalJobs}</div>
                   <div className="text-xs text-gray-500">
                     Provider: {gpu.provider.slice(0, 10)}...
@@ -530,7 +560,7 @@ export default function ConsumerDashboard({ address }: Props) {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="text-xs text-gray-500">GPU Hourly Rate</div>
-                    <div className="text-white font-semibold">{selectedGpu.pricePerHour} ETH/hour</div>
+                    <div className="text-white font-semibold">{selectedGpu.pricePerHour} ${getCurrencySymbol()}/hour</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-500">Compute Hours</div>
@@ -538,17 +568,17 @@ export default function ConsumerDashboard({ address }: Props) {
                   </div>
                   <div>
                     <div className="text-xs text-gray-500">Provider Earns (95%)</div>
-                    <div className="text-[#00FF88] font-semibold">{(parseFloat(calculatedPayment) * 0.95).toFixed(4)} ETH</div>
+                    <div className="text-[#00FF88] font-semibold">{(parseFloat(calculatedPayment) * 0.95).toFixed(4)} ${getCurrencySymbol()}</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-500">Platform Fee (5%)</div>
-                    <div className="text-gray-400 text-sm">{(parseFloat(calculatedPayment) * 0.05).toFixed(4)} ETH</div>
+                    <div className="text-gray-400 text-sm">{(parseFloat(calculatedPayment) * 0.05).toFixed(4)} ${getCurrencySymbol()}</div>
                   </div>
                 </div>
                 <div className="mt-3 pt-3 border-t border-gray-700">
                   <div className="flex justify-between items-center">
                     <span className="text-gray-400">Total Payment:</span>
-                    <span className="text-2xl font-bold text-[#00FF88]">{calculatedPayment} ETH</span>
+                    <span className="text-2xl font-bold text-[#00FF88]">{calculatedPayment} ${getCurrencySymbol()}</span>
                   </div>
                 </div>
               </div>
@@ -559,7 +589,7 @@ export default function ConsumerDashboard({ address }: Props) {
               disabled={txPending || !computeHours || calculatedPayment === "0"}
               className="w-full bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-6 py-3 rounded-none font-medium disabled:opacity-50 text-lg border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50"
             >
-              {txPending ? "Processing..." : `Post Job & Pay ${calculatedPayment} ETH`}
+              {txPending ? "Processing..." : `Post Job & Pay ${calculatedPayment} ${getCurrencySymbol()}`}
             </button>
           </div>
         </div>
@@ -664,7 +694,7 @@ export default function ConsumerDashboard({ address }: Props) {
                     <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-[#00FF88]/30">
                       <div>
                         <div className="text-xs text-gray-500">Your Payment</div>
-                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ${getCurrencySymbol()}</div>
                         <div className="text-xs text-gray-500">
                           {job.status === JobStatus.Open && "Locked in escrow"}
                           {job.status === JobStatus.Claimed && "In escrow"}
@@ -673,8 +703,8 @@ export default function ConsumerDashboard({ address }: Props) {
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Provider Gets (95%)</div>
-                        <div className="text-lg font-semibold text-[#00FF88]">{providerEarnings} ETH</div>
-                        <div className="text-xs text-gray-500">Platform: {platformFee} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{providerEarnings} ${getCurrencySymbol()}</div>
+                        <div className="text-xs text-gray-500">Platform: {platformFee} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU Used</div>
@@ -803,13 +833,13 @@ export default function ConsumerDashboard({ address }: Props) {
                     <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-gray-700">
                       <div>
                         <div className="text-xs text-gray-500">Your Payment</div>
-                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ${getCurrencySymbol()}</div>
                         <div className="text-xs text-gray-500">Paid to provider</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Provider Got (95%)</div>
-                        <div className="text-lg font-semibold text-[#00FF88]">{providerEarnings} ETH</div>
-                        <div className="text-xs text-gray-500">Platform: {platformFee} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{providerEarnings} ${getCurrencySymbol()}</div>
+                        <div className="text-xs text-gray-500">Platform: {platformFee} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU Used</div>

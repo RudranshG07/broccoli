@@ -3,12 +3,15 @@ import { ethers } from "ethers";
 import { useWallet } from "./hooks/useWallet";
 import ProviderDashboard from "./pages/ProviderDashboard";
 import ConsumerDashboard from "./pages/ConsumerDashboard";
+import { NETWORKS, SUPPORTED_CHAIN_IDS, getNetworkName } from "./config/contracts";
 
 function App() {
   const { address, connectWallet, disconnectWallet, isConnecting, error } = useWallet();
   const [view, setView] = useState<"provider" | "consumer">("provider");
   const [balance, setBalance] = useState<string>("0");
   const [network, setNetwork] = useState<string>("");
+  const [chainId, setChainId] = useState<number>(0);
+  const [showNetworkDropdown, setShowNetworkDropdown] = useState(false);
 
   useEffect(() => {
     const loadWalletData = async () => {
@@ -22,7 +25,8 @@ function App() {
 
           // Get network
           const net = await provider.getNetwork();
-          setNetwork(net.name === "sepolia" ? "Sepolia Testnet" : net.name);
+          setChainId(net.chainId);
+          setNetwork(getNetworkName(net.chainId));
         } catch (err) {
           console.error("Failed to load wallet data:", err);
         }
@@ -33,6 +37,77 @@ function App() {
     const interval = setInterval(loadWalletData, 10000); // Update every 10s
     return () => clearInterval(interval);
   }, [address]);
+
+  // Listen for network changes
+  useEffect(() => {
+    if (window.ethereum) {
+      const handleChainChanged = async (chainIdHex: string) => {
+        const newChainId = parseInt(chainIdHex, 16);
+        setChainId(newChainId);
+        setNetwork(getNetworkName(newChainId));
+
+        // Reload wallet data
+        if (address) {
+          const provider = new ethers.providers.Web3Provider(window.ethereum);
+          const bal = await provider.getBalance(address);
+          setBalance(ethers.utils.formatEther(bal));
+        }
+      };
+      window.ethereum.on('chainChanged', handleChainChanged);
+      return () => {
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      };
+    }
+  }, [address]);
+
+  const switchNetwork = async (targetChainId: number) => {
+    try {
+      const targetNetwork = targetChainId === 11155111 ? NETWORKS.sepolia : NETWORKS.shardeum;
+
+      console.log(`Switching to ${targetNetwork.name} (Chain ID: ${targetChainId})`);
+
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: targetNetwork.chainIdHex }],
+      });
+      setShowNetworkDropdown(false);
+      console.log(`Successfully switched to ${targetNetwork.name}`);
+    } catch (switchError: any) {
+      // This error code indicates that the chain has not been added to MetaMask
+      if (switchError.code === 4902) {
+        try {
+          const targetNetwork = targetChainId === 11155111 ? NETWORKS.sepolia : NETWORKS.shardeum;
+
+          const nativeCurrency = targetChainId === 8119
+            ? { name: 'Shardeum', symbol: 'SHM', decimals: 18 }
+            : { name: 'Ethereum', symbol: 'ETH', decimals: 18 };
+
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [
+              {
+                chainId: targetNetwork.chainIdHex,
+                chainName: targetNetwork.name,
+                rpcUrls: [targetNetwork.rpcUrl],
+                blockExplorerUrls: [targetNetwork.blockExplorer],
+                nativeCurrency: nativeCurrency,
+              },
+            ],
+          });
+          setShowNetworkDropdown(false);
+        } catch (addError: any) {
+          console.error('Failed to add network:', addError);
+          alert(`Failed to add network: ${addError.message || 'Please try again'}`);
+        }
+      } else if (switchError.code === 4001) {
+        // User rejected the request
+        console.log('User rejected network switch');
+      } else {
+        console.error('Failed to switch network:', switchError);
+        alert(`Failed to switch network: ${switchError.message || 'Please try again'}`);
+      }
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-gray-100">
@@ -81,14 +156,40 @@ function App() {
                 </button>
               ) : (
                 <div className="flex items-center space-x-4">
+                  {/* Network Switcher */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowNetworkDropdown(!showNetworkDropdown)}
+                      className={`px-4 py-2 rounded-none text-sm font-semibold border-2 ${
+                        SUPPORTED_CHAIN_IDS.includes(chainId)
+                          ? "border-green-500 bg-green-500/20 text-green-400"
+                          : "border-red-500 bg-red-500/20 text-red-400"
+                      }`}
+                    >
+                      {network || "Unknown Network"} ▼
+                    </button>
+                    {showNetworkDropdown && (
+                      <div className="absolute right-0 mt-2 w-48 bg-gray-900 border-2 border-green-500 rounded-none shadow-lg z-50">
+                        <button
+                          onClick={() => switchNetwork(11155111)}
+                          className={`block w-full text-left px-4 py-2 hover:bg-gray-800 ${
+                            chainId === 11155111 ? "text-green-400 bg-gray-800" : "text-white"
+                          }`}
+                        >
+                          Sepolia
+                        </button>
+                        <button
+                          onClick={() => switchNetwork(8119)}
+                          className={`block w-full text-left px-4 py-2 hover:bg-gray-800 ${
+                            chainId === 8119 ? "text-green-400 bg-gray-800" : "text-white"
+                          }`}
+                        >
+                          Shardeum
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <div className="text-right">
-                    <div className="text-xs text-gray-500">
-                      {network && (
-                        <span className={network === "Sepolia Testnet" ? "text-green-400" : "text-red-400"}>
-                          {network}
-                        </span>
-                      )}
-                    </div>
                     <div className="text-sm font-semibold text-green-400">
                       {parseFloat(balance).toFixed(4)} ETH
                     </div>
@@ -126,15 +227,15 @@ function App() {
               Connect your MetaMask wallet to get started
             </p>
             <p className="text-sm text-gray-500">
-              Make sure you're on Sepolia testnet
+              Supports Sepolia and Shardeum testnets
             </p>
           </div>
         ) : (
           <div>
             {view === "provider" ? (
-              <ProviderDashboard address={address} />
+              <ProviderDashboard address={address} currentChainId={chainId} />
             ) : (
-              <ConsumerDashboard address={address} />
+              <ConsumerDashboard address={address} currentChainId={chainId} />
             )}
           </div>
         )}

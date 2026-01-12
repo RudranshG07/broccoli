@@ -1,21 +1,29 @@
 import { useState, useEffect } from "react";
 import { ethers } from "ethers";
-import { CONTRACTS, GPU_REGISTRY_ABI, JOB_MARKETPLACE_ABI } from "../config/contracts";
+import { GPU_REGISTRY_ABI, JOB_MARKETPLACE_ABI, getContracts } from "../config/contracts";
 import type { GPU, Job } from "../types";
 import { JobStatus, getJobStatusName } from "../types";
 import { uploadJobResult, getIPFSGatewayUrl } from "../utils/ipfs";
 
 interface Props {
   address: string;
+  currentChainId: number;
 }
 
-export default function ProviderDashboard({ address }: Props) {
+export default function ProviderDashboard({ address, currentChainId }: Props) {
   const [gpus, setGpus] = useState<(GPU & { id: number })[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [availableJobs, setAvailableJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
   const [txPending, setTxPending] = useState(false);
   const [notifications, setNotifications] = useState<string[]>([]);
+
+  const chainId = currentChainId;
+
+  // Get currency symbol based on network
+  const getCurrencySymbol = () => {
+    return chainId === 8119 ? 'SHM' : 'ETH';
+  };
 
   // Form state
   const [gpuModel, setGpuModel] = useState("");
@@ -43,12 +51,12 @@ export default function ProviderDashboard({ address }: Props) {
     try {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const registryContract = new ethers.Contract(
-        CONTRACTS.sepolia.gpuRegistry,
+        getContracts(chainId).gpuRegistry,
         GPU_REGISTRY_ABI,
         provider
       );
       const marketplaceContract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         provider
       );
@@ -130,13 +138,14 @@ export default function ProviderDashboard({ address }: Props) {
   };
 
   useEffect(() => {
-    if (CONTRACTS.sepolia.gpuRegistry !== "0x0000000000000000000000000000000000000000") {
+    if (chainId === 0) return; // Wait for chainId to be set
+    if (getContracts(chainId).gpuRegistry !== "0x0000000000000000000000000000000000000000") {
       loadData();
 
       // Setup event listeners for real-time updates
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const marketplaceContract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         provider
       );
@@ -152,7 +161,7 @@ export default function ProviderDashboard({ address }: Props) {
       const paymentFilter = marketplaceContract.filters.PaymentReleased(null, address);
       marketplaceContract.on(paymentFilter, async (jobId, _provider, amount) => {
         const ethAmount = ethers.utils.formatEther(amount);
-        addNotification(`Payment received: ${ethAmount} ETH for Job #${jobId.toNumber()}`);
+        addNotification(`Payment received: ${ethAmount} ${getCurrencySymbol()} for Job #${jobId.toNumber()}`);
         await loadData();
       });
 
@@ -177,7 +186,7 @@ export default function ProviderDashboard({ address }: Props) {
         marketplaceContract.removeAllListeners();
       };
     }
-  }, [address]);
+  }, [address, chainId]);
 
   const registerGPU = async () => {
     if (!gpuModel || !vram || !price) return;
@@ -187,7 +196,7 @@ export default function ProviderDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.gpuRegistry,
+        getContracts(chainId).gpuRegistry,
         GPU_REGISTRY_ABI,
         signer
       );
@@ -217,7 +226,7 @@ export default function ProviderDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.gpuRegistry,
+        getContracts(chainId).gpuRegistry,
         GPU_REGISTRY_ABI,
         signer
       );
@@ -239,7 +248,7 @@ export default function ProviderDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         signer
       );
@@ -370,7 +379,7 @@ export default function ProviderDashboard({ address }: Props) {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACTS.sepolia.jobMarketplace,
+        getContracts(chainId).jobMarketplace,
         JOB_MARKETPLACE_ABI,
         signer
       );
@@ -404,7 +413,7 @@ export default function ProviderDashboard({ address }: Props) {
     }
   };
 
-  if (CONTRACTS.sepolia.gpuRegistry === "0x0000000000000000000000000000000000000000") {
+  if (getContracts(chainId).gpuRegistry === "0x0000000000000000000000000000000000000000") {
     return (
       <div className="bg-yellow-900/20 border border-yellow-700 text-yellow-200 p-4 rounded-none">
         <strong>Contracts not deployed yet!</strong> Deploy the smart contracts to Sepolia and
@@ -459,7 +468,7 @@ export default function ProviderDashboard({ address }: Props) {
               {jobs
                 .filter(j => j.status === JobStatus.Completed)
                 .reduce((sum, job) => sum + parseFloat(job.paymentAmount) * 0.95, 0)
-                .toFixed(4)} ETH
+                .toFixed(4)} ${getCurrencySymbol()}
             </div>
             <div className="text-xs text-gray-400 mt-1">95% of payments</div>
           </div>
@@ -495,7 +504,7 @@ export default function ProviderDashboard({ address }: Props) {
           />
           <input
             type="text"
-            placeholder="Price per Hour (ETH)"
+            placeholder={`Price per Hour (${getCurrencySymbol()})`}
             value={price}
             onChange={(e) => setPrice(e.target.value)}
             className="bg-gray-800 border-2 border-gray-600 rounded-none px-4 py-2 text-white focus:border-[#00FF88] focus:outline-none"
@@ -541,7 +550,7 @@ export default function ProviderDashboard({ address }: Props) {
                 </div>
                 <div className="text-sm space-y-1 text-gray-300">
                   <div>VRAM: {gpu.vramGB} GB</div>
-                  <div>Price: {gpu.pricePerHour} ETH/hour</div>
+                  <div>Price: {gpu.pricePerHour} ${getCurrencySymbol()}/hour</div>
                   <div>Total Jobs: {gpu.totalJobs}</div>
                   <div className="text-xs text-gray-500 mt-2">
                     Registered: {new Date(gpu.registeredAt * 1000).toLocaleDateString()}
@@ -614,11 +623,11 @@ export default function ProviderDashboard({ address }: Props) {
                     <div className="grid grid-cols-3 gap-4 mt-3 p-3 bg-black rounded-none border border-[#00FF88]/30">
                       <div>
                         <div className="text-xs text-gray-500">Total Payment</div>
-                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">You'll Earn (95%)</div>
-                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU</div>
@@ -630,7 +639,7 @@ export default function ProviderDashboard({ address }: Props) {
                       <div>Compute Hours: {job.computeHours}h</div>
                       <div>Consumer: {job.consumer.slice(0, 10)}...{job.consumer.slice(-8)}</div>
                       <div>Posted: {new Date(job.createdAt * 1000).toLocaleString()}</div>
-                      <div className="text-xs text-[#00FF88] mt-2">Platform fee: {platformFee} ETH (5%)</div>
+                      <div className="text-xs text-[#00FF88] mt-2">Platform fee: {platformFee} ${getCurrencySymbol()} (5%)</div>
                     </div>
                   </div>
 
@@ -642,7 +651,7 @@ export default function ProviderDashboard({ address }: Props) {
                       className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-8 py-4 rounded-none font-bold text-lg disabled:opacity-50 border-2 border-[#00FF88] shadow-xl shadow-[#00FF88]/50 animate-pulse transition-all hover:shadow-2xl hover:shadow-[#00FF88]/70"
                     >
                       Claim Job<br/>
-                      <span className="text-sm font-normal">Earn {yourEarnings} ETH</span>
+                      <span className="text-sm font-normal">Earn {yourEarnings} ${getCurrencySymbol()}</span>
                     </button>
                   </div>
                 </div>
@@ -741,15 +750,15 @@ export default function ProviderDashboard({ address }: Props) {
                     <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-[#00FF88]/30">
                       <div>
                         <div className="text-xs text-gray-500">Total Payment</div>
-                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Your Earnings (95%)</div>
-                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Platform Fee (5%)</div>
-                        <div className="text-sm text-gray-400">{platformFee} ETH</div>
+                        <div className="text-sm text-gray-400">{platformFee} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU Used</div>
@@ -852,14 +861,14 @@ export default function ProviderDashboard({ address }: Props) {
                           className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-600 text-white px-6 py-3 rounded-none font-medium disabled:opacity-50 border-2 border-[#00FF88] shadow-lg shadow-[#00FF88]/30 transition-all hover:shadow-xl hover:shadow-[#00FF88]/50 whitespace-nowrap"
                         >
                           {ipfsHashes[job.jobId] ? "Submit to Blockchain" : executionResults[job.jobId] ? "Submit Result" : "Complete Job"}<br/>
-                          <span className="text-xs">Earn {yourEarnings} ETH</span>
+                          <span className="text-xs">Earn {yourEarnings} ${getCurrencySymbol()}</span>
                         </button>
                       </>
                     )}
                     {job.status === JobStatus.Completed && (
                       <div className="text-center p-3 bg-green-900/30 rounded-none border-2 border-[#00FF88]">
                         <div className="text-[#00FF88] font-semibold">Paid!</div>
-                        <div className="text-sm text-gray-400">{yourEarnings} ETH</div>
+                        <div className="text-sm text-gray-400">{yourEarnings} ${getCurrencySymbol()}</div>
                       </div>
                     )}
                   </div>
@@ -922,15 +931,15 @@ export default function ProviderDashboard({ address }: Props) {
                     <div className="grid grid-cols-2 gap-4 mt-3 p-3 bg-black rounded-none border border-gray-700">
                       <div>
                         <div className="text-xs text-gray-500">Total Payment</div>
-                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ETH</div>
+                        <div className="text-lg font-semibold text-white">{job.paymentAmount} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">You Earned (95%)</div>
-                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ETH</div>
+                        <div className="text-lg font-semibold text-[#00FF88]">{yourEarnings} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Platform Fee (5%)</div>
-                        <div className="text-sm text-gray-500">{platformFee} ETH</div>
+                        <div className="text-sm text-gray-500">{platformFee} ${getCurrencySymbol()}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">GPU Used</div>
@@ -960,7 +969,7 @@ export default function ProviderDashboard({ address }: Props) {
                   <div className="ml-4">
                     <div className="text-center p-3 bg-green-900/30 rounded-none border-2 border-[#00FF88]">
                       <div className="text-[#00FF88] font-semibold">Paid!</div>
-                      <div className="text-sm text-gray-400">{yourEarnings} ETH</div>
+                      <div className="text-sm text-gray-400">{yourEarnings} ${getCurrencySymbol()}</div>
                     </div>
                   </div>
                 </div>

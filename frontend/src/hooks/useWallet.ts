@@ -26,22 +26,7 @@ export const useWallet = () => {
       const web3Signer = web3Provider.getSigner();
       const userAddress = await web3Signer.getAddress();
 
-      // Check network
-      const network = await web3Provider.getNetwork();
-      if (network.chainId !== SEPOLIA_CHAIN_ID) {
-        try {
-          await window.ethereum.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: `0x${SEPOLIA_CHAIN_ID.toString(16)}` }],
-          });
-        } catch (switchError: any) {
-          if (switchError.code === 4902) {
-            throw new Error("Please add Sepolia network to MetaMask");
-          }
-          throw switchError;
-        }
-      }
-
+      // Accept any network - we support both Sepolia and Shardeum
       setProvider(web3Provider);
       setSigner(web3Signer);
       setAddress(userAddress);
@@ -70,15 +55,12 @@ export const useWallet = () => {
         }
       });
 
-      window.ethereum.on("chainChanged", () => {
-        window.location.reload();
-      });
+      // Chain change is handled in App.tsx - don't reload here
     }
 
     return () => {
       if (window.ethereum) {
         window.ethereum.removeAllListeners("accountsChanged");
-        window.ethereum.removeAllListeners("chainChanged");
       }
     };
   }, []);
