@@ -4,7 +4,7 @@ A **DePIN (Decentralized Physical Infrastructure Network)** platform that democr
 
 ## 🌟 Key Features
 
-- **🎨 Beautiful Landing Page** - Designed with ThinkRoot AI for an intuitive, modern user experience
+- **🎨 Beautiful Landing Page** - Designed with ""ThinkRoot AI"" for an intuitive, modern user experience
 - **💰 Multi-Network Support** - Deployed on both **Sepolia** and **Shardeum** testnets for maximum accessibility
 - **🔒 Smart Contract Escrow** - Trustless payments with automatic release on job completion
 - **⚡ Real-time Updates** - Event-based notifications for instant job status tracking
@@ -54,7 +54,7 @@ We chose **Shardeum** as our secondary deployment network because:
 - React 18 + TypeScript
 - Vite 7.3.1 (Lightning-fast builds)
 - TailwindCSS 3 (Utility-first styling)
-- ThinkRoot AI (Landing page design)
+- ""ThinkRoot AI"" (Landing page design)
 
 **Infrastructure**
 - IPFS via Pinata (Decentralized storage)
@@ -98,63 +98,6 @@ ethereum-gpu-depin/
 └── README.md
 ```
 
-## 🏃 Quick Start
-
-### Prerequisites
-
-```bash
-# Required software
-Node.js >= 18.0.0
-npm >= 9.0.0
-Foundry (forge, cast)
-MetaMask browser extension
-```
-
-### 1. Clone & Install
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/broccobyte.git
-cd broccobyte
-
-# Install frontend dependencies
-cd frontend
-npm install
-
-# Install provider worker dependencies
-cd ../provider-worker
-npm install
-```
-
-### 2. Environment Setup
-
-Create `frontend/.env`:
-```env
-VITE_PINATA_JWT=your_pinata_jwt_token_here
-```
-
-Create `contracts/.env`:
-```env
-PRIVATE_KEY=your_wallet_private_key
-SEPOLIA_RPC_URL=https://sepolia.infura.io/v3/YOUR_INFURA_KEY
-SHARDEUM_RPC_URL=https://api-mezame.shardeum.org
-```
-
-### 3. Run Frontend
-
-```bash
-cd frontend
-npm run dev
-# Open http://localhost:5173
-```
-
-### 4. Run Provider Worker (Optional)
-
-```bash
-cd provider-worker
-npm start
-# GPU worker runs on http://localhost:3001
-```
 
 ## 💡 How It Works
 
@@ -186,28 +129,17 @@ Provider Claims Job
 Provider Completes Work + Uploads to IPFS
     ↓
 Smart Contract Auto-Releases Payment:
-    • 95% → Provider
-    • 5% → Platform Fee
+    • 90 - 95% → Provider
+    • 5 - 10% → Platform Fee
 ```
 
-## 🔗 Get Testnet Tokens
-
-**Sepolia Testnet (ETH)**
-- [Alchemy Faucet](https://sepoliafaucet.com/)
-- [Infura Faucet](https://www.infura.io/faucet/sepolia)
-
-**Shardeum Testnet (SHM)**
-- [Official Shardeum Faucet](https://faucet-sphinx.shardeum.org/)
-- Enter wallet address, receive 100 SHM instantly
 
 ## 🎨 UI/UX Features
 
-- **🌙 Dark Theme** - Broccoli green accents on black background
 - **🔄 Network Switcher** - Seamless toggle between Sepolia ↔ Shardeum
 - **🔔 Live Notifications** - Toast alerts for job claims, completions, payments
 - **💰 Smart Currency Display** - Shows ETH on Sepolia, SHM on Shardeum
 - **📱 Responsive Design** - Works on desktop, tablet, and mobile
-- **⚡ Fast Loading** - Optimized with Vite's HMR and code splitting
 
 ## 📜 Smart Contract Architecture
 
@@ -215,17 +147,6 @@ Smart Contract Auto-Releases Payment:
 
 **Purpose**: On-chain GPU resource catalog
 
-```solidity
-struct GPU {
-    address provider;
-    string model;          // "NVIDIA RTX 4090"
-    uint256 vramGB;        // 24
-    uint256 pricePerHour;  // in wei
-    bool available;
-    uint256 totalJobs;
-    uint256 registeredAt;
-}
-```
 
 **Key Functions**:
 - `registerGPU(model, vram, price)` → Returns GPU ID
@@ -241,43 +162,12 @@ struct GPU {
 
 **Purpose**: Job posting, escrow, and payment automation
 
-```solidity
-enum JobStatus { Open, Claimed, Completed, Cancelled }
-
-struct Job {
-    uint256 jobId;
-    address consumer;
-    uint256 gpuId;
-    string description;
-    uint256 computeHours;
-    uint256 paymentAmount;      // Locked in contract
-    address provider;
-    JobStatus status;
-    uint256 createdAt;
-    uint256 claimedAt;
-    uint256 completedAt;
-    string resultHash;          // IPFS CID
-}
-```
-
 **Key Functions**:
 - `postJob(gpuId, description, hours) payable` → Locks ETH/SHM
 - `claimJob(jobId)` → Provider accepts work
 - `completeJob(jobId, ipfsHash)` → Submit results
 - `cancelJob(jobId)` → Refund if unclaimed
 
-**Payment Logic**:
-```solidity
-uint256 providerAmount = (payment * 95) / 100;
-uint256 platformFee = payment - providerAmount;
-payable(provider).transfer(providerAmount);
-```
-
-**Cross-Contract Verification**:
-```solidity
-IGPURegistry(registry).getGPU(gpuId);
-require(gpu.available, "GPU offline");
-```
 
 ## 🔐 Security Features
 
@@ -288,41 +178,6 @@ require(gpu.available, "GPU offline");
 ✅ **Reentrancy Guards** - Safe external calls with checks-effects-interactions
 ✅ **Event Logging** - All state changes emit events for transparency
 
-## 🚀 Deployment Guide
-
-### Deploy Smart Contracts
-
-```bash
-cd contracts
-
-# Compile contracts
-forge build
-
-# Run tests
-forge test -vv
-
-# Deploy to Sepolia
-forge script script/Deploy.s.sol \
-  --rpc-url $SEPOLIA_RPC_URL \
-  --broadcast \
-  --verify
-
-# Deploy to Shardeum
-forge script script/Deploy.s.sol \
-  --rpc-url $SHARDEUM_RPC_URL \
-  --broadcast \
-  --legacy
-```
-
-### Deploy Frontend to Vercel
-
-```bash
-cd frontend
-npm run build
-
-# Push to GitHub (Vercel auto-deploys)
-git push origin main
-```
 
 ## 📊 Gas Costs Comparison
 
@@ -349,35 +204,6 @@ git push origin main
 
 Users choose based on their needs - Ethereum for trust, Shardeum for efficiency.
 
-## 🧪 Testing
-
-```bash
-# Smart contract tests
-cd contracts
-forge test -vv
-
-# Frontend type checking
-cd frontend
-npm run build
-
-# Run provider worker
-cd provider-worker
-npm test
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Here's how:
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
-
-## 📝 License
-
-MIT License - See [LICENSE](LICENSE) file for details
 
 ## 🙏 Acknowledgments
 
@@ -400,10 +226,8 @@ MIT License - See [LICENSE](LICENSE) file for details
 
 - **Website**: [broccobyte.vercel.app](https://broccobyte.vercel.app)
 - **GitHub**: [github.com/yourusername/broccobyte](https://github.com/yourusername/broccobyte)
-- **Twitter**: [@BroccoByte](https://twitter.com/broccobyte)
-- **Discord**: [Join our community](https://discord.gg/broccobyte)
 
 ---
 
-**Built with 🥦 by the BroccoByte team**
-*Democratizing GPU access through blockchain technology*
+Built with 🥦 by the BroccoByte team
+Democratizing GPU access through blockchain technology
